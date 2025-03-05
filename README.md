@@ -108,7 +108,7 @@ If you use this project in your research, please cite:
 ```
 @misc{sparse_pointcloud_generator,
   title={Sparse Pointcloud Generator},
-  author={Your Name},
+  author={Kumar Ankit},
   year={2025},
   url={https://github.com/krankit00/sfm_project}
 }
