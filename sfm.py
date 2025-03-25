@@ -216,53 +216,67 @@ class SparsePointCloudGenerator:
         
         return points_array
     
-    def generate_pointcloud(self, target_fps=None):
+    def generate_pointcloud(self, target_fps=None, remove_outliers=True, nb_neighbors=20, std_ratio=2.0):
         """
-        Main method to generate sparse point cloud
+        Main method to generate sparse point cloud with optional outlier removal.
         
         Args:
-            target_fps (float, optional): Target frames per second to sample
+            target_fps (float, optional): Target frames per second to sample.
+            remove_outliers (bool, optional): Apply statistical outlier removal.
+            nb_neighbors (int, optional): Number of neighbors for statistical outlier removal.
+            std_ratio (float, optional): Standard deviation multiplier for filtering.
         
         Returns:
-            open3d.geometry.PointCloud: Sparse point cloud
+            open3d.geometry.PointCloud: Filtered sparse point cloud.
         """
         if self.verbose:
             self.logger.info("Starting sparse point cloud generation")
-        
+
         # Extract frames
         self.extract_frames(target_fps)
-        
+
         # Detect features
         self.detect_features(method='sift')
-        
+
         # Match features
         self.matches_list = self.match_features(matching_method='bf')
-        
+
         # Estimate camera motion
         camera_motions = self.estimate_motion(self.matches_list)
-        
+
         # Triangulate points
         points = self.triangulate_points(camera_motions)
-        
+
         # Convert to Open3D point cloud
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
-        
+
+        if remove_outliers:
+            if self.verbose:
+                self.logger.info(f"Applying statistical outlier removal (neighbors={nb_neighbors}, std_ratio={std_ratio})")
+            
+            # Remove statistical outliers
+            cl, ind = pcd.remove_statistical_outlier(nb_neighbors=nb_neighbors, std_ratio=std_ratio)
+            pcd = pcd.select_by_index(ind)
+
+            if self.verbose:
+                self.logger.info(f"Outlier removal complete: {len(ind)} points remaining")
+
         if self.verbose:
             self.logger.info("Sparse point cloud generation complete")
-        
+
         return pcd
+
 
 # Example usage
 def main():
-    video_path = 'test.mp4'
+    video_path = 'watchtower.mp4'
     
     # Create generator with verbose logging
     sfm_generator = SparsePointCloudGenerator(video_path, verbose=True)
     
     # Generate point cloud, sampling at 2 fps
-    point_cloud = sfm_generator.generate_pointcloud(target_fps=2)
-    
+    point_cloud = sfm_generator.generate_pointcloud(target_fps=2, remove_outliers=True)    
     # Visualize point cloud
     o3d.visualization.draw_geometries([point_cloud])
     o3d.io.write_point_cloud("output_point_cloud.ply", point_cloud)
