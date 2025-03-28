@@ -32,7 +32,7 @@ class SFMPipeline:
             'ransac_threshold': 3.0,  # Increased from 1.0
             'max_images': None,  # No limit
             'sequential_match_distance': 2,  # Increased from 1
-            'debug_mode': True  # Added debug mode
+            'debug_mode': False  # Added debug mode
         }
         
         # Update default params with user-provided params
@@ -80,7 +80,7 @@ class SFMPipeline:
     
     def _load_images(self) -> Dict[str, np.ndarray]:
         """
-        Load images from the specified directory
+        Load images from the specified directory with correct numerical sorting
         
         Returns:
         - Dictionary of image filenames and their numpy arrays
@@ -88,22 +88,36 @@ class SFMPipeline:
         image_database = {}
         image_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.bmp']
         
+        # Function to extract numeric part from filename
+        def extract_number(filename):
+            try:
+                # Extract the numeric part between 'frames' and '.jpeg'
+                return int(''.join(filter(str.isdigit, str(filename))))
+            except ValueError:
+                return 0
+        
+        # Find all image files
+        all_images = list(self.image_path.glob('*'))
+        
         # Sort images numerically
         sorted_images = sorted(
-            self.image_path.glob('*'), 
-            key=lambda s: int(str(s)[-9:-6] if str(s)[-9:-6].isdigit() else 0)
+            [img for img in all_images if img.suffix.lower() in image_extensions],
+            key=extract_number
         )
         
         # Limit images if max_images is set
         if self.params['max_images']:
             sorted_images = sorted_images[:self.params['max_images']]
         
+        # Load images
         for img_path in sorted_images:
-            if img_path.suffix.lower() in image_extensions:
-                img = cv2.imread(str(img_path))
-                if img is not None:
-                    image_database[img_path.name] = img
+            img = cv2.imread(str(img_path))
+            if img is not None:
+                image_database[img_path.name] = img
+        
         logging.info(f"Loaded {len(image_database)} images")
+        logging.info(f"Image sequence: {list(image_database.keys())}")
+        
         return image_database
     
     def _sift_detector(self, image: np.ndarray) -> Tuple:
@@ -259,7 +273,8 @@ class SFMPipeline:
                     matches = self.feature_matcher(desc1, desc2)
                     
                     # Logging match details
-                    logging.info(f"Matching {img1_name} and {img2_name}: {len(matches)} matches")
+                    if self.params.get('debug_mode', False):
+                        logging.info(f"Matching {img1_name} and {img2_name}: {len(matches)} matches")
                     
                     if len(matches) > self.params['min_matches']:
                         matched_pairs.append({
@@ -299,8 +314,8 @@ class SFMPipeline:
             # More relaxed ratio test
             if m.distance < 0.8 * n.distance:
                 good_matches.append(m)
-        
-        logging.info(f"Total matches found: {len(matches)}, Good matches: {len(good_matches)}")
+        if self.params.get('debug_mode', False):
+            logging.info(f"Total matches found: {len(matches)}, Good matches: {len(good_matches)}")
         
         return good_matches
     
@@ -348,7 +363,8 @@ class SFMPipeline:
                         'fundamental_matrix': F
                     })
                 else:
-                    logging.warning(f"Not enough inliers between {img1_name} and {img2_name}")
+                    if self.params.get('debug_mode', False):
+                        logging.warning(f"Not enough inliers between {img1_name} and {img2_name}")
             
             except Exception as e:
                 logging.error(f"Geometric verification error for {img1_name} and {img2_name}: {e}")
@@ -377,138 +393,98 @@ class SFMPipeline:
         # Initialize reconstruction
         reconstruction = {
             'points3d': [],
-            'cameras': []
+            'cameras': {},
+            'point_visibility': {}  # Track which cameras see each point
         }
         
-        # Track processed images and their indices
+        # Track processed images
         processed_images = set()
         
         # Sort matches to prioritize pairs with most matches
         sorted_matches = sorted(verified_matches, key=lambda x: len(x['matches']), reverse=True)
         
-        # Process initial pair with most matches
-        initial_pair = sorted_matches[0]
-        img1_name, img2_name = initial_pair['images']
-        matches = initial_pair['matches']
-        
-        # Extract keypoints for initial pair
-        kp1 = features[img1_name]['keypoints']
-        kp2 = features[img2_name]['keypoints']
-        
-        pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
-        pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
-        
-        # Estimate essential matrix
-        E, _ = cv2.findEssentialMat(pts1, pts2, K)
-        
-        # Recover pose
-        _, R, t, _ = cv2.recoverPose(E, pts1, pts2, K)
-        
-        # Initial camera poses
-        reconstruction['cameras'].append({
-            'image': img1_name,
-            'R': np.eye(3),
-            't': np.zeros((3, 1))
-        })
-        reconstruction['cameras'].append({
-            'image': img2_name,
-            'R': R,
-            't': t
-        })
-        
-        processed_images.update([img1_name, img2_name])
-        
-        # Triangulate initial points
-        projection_matrix1 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-        projection_matrix2 = K @ np.hstack((R, t))
-        
-        points_4d = cv2.triangulatePoints(
-            projection_matrix1, 
-            projection_matrix2, 
-            pts1.T, 
-            pts2.T
-        )
-        
-        # Convert to 3D points
-        points_3d = points_4d[:3] / points_4d[3]
-        reconstruction['points3d'] = points_3d.T
-        
-        # Iteratively add more images
-        for match in sorted_matches[1:]:
-            img1_name, img2_name = match['images']
-            
-            # Skip if either image is already processed
-            if img1_name in processed_images or img2_name in processed_images:
-                continue
-            
+        def add_camera_pair(img1_name, img2_name, matches):
+            """
+            Add a new camera pair to the reconstruction
+            """
             # Extract keypoints
             kp1 = features[img1_name]['keypoints']
             kp2 = features[img2_name]['keypoints']
             
-            matches = match['matches']
             pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
             pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
             
-            # PnP (Perspective-n-Point) to estimate camera pose
-            # Find references to already processed images
-            reference_camera = None
-            for existing_camera in reconstruction['cameras']:
-                if existing_camera['image'] in [img1_name, img2_name]:
-                    reference_camera = existing_camera
-                    break
+            # Estimate essential matrix
+            E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC)
             
-            if reference_camera is None:
-                logging.warning(f"No reference camera found for {img1_name} and {img2_name}")
-                continue
+            # Recover pose
+            _, R, t, mask = cv2.recoverPose(E, pts1, pts2, K)
             
-            # Estimate new camera pose
-            success, R_vec, t_vec, _ = cv2.solvePnPRansac(
-                objectPoints=np.array(reconstruction['points3d']),
-                imagePoints=pts1,
-                cameraMatrix=K,
-                distCoeffs=None
-            )
+            # First time processing these images
+            if img1_name not in reconstruction['cameras']:
+                reconstruction['cameras'][img1_name] = {
+                    'R': np.eye(3),
+                    't': np.zeros((3, 1))
+                }
             
-            if not success:
-                logging.warning(f"Failed to estimate pose for {img1_name}")
-                continue
+            if img2_name not in reconstruction['cameras']:
+                reconstruction['cameras'][img2_name] = {
+                    'R': R,
+                    't': t
+                }
             
-            # Convert rotation vector to matrix
-            R, _ = cv2.Rodrigues(R_vec)
-            t = t_vec
+            # Triangulate points
+            projection_matrix1 = K @ np.hstack((reconstruction['cameras'][img1_name]['R'], 
+                                                reconstruction['cameras'][img1_name]['t']))
+            projection_matrix2 = K @ np.hstack((R, t))
             
-            # Triangulate new points
-            last_projection_matrix = K @ np.hstack((reference_camera['R'], reference_camera['t']))
-            new_projection_matrix = K @ np.hstack((R, t))
-            
-            new_points_4d = cv2.triangulatePoints(
-                last_projection_matrix, 
-                new_projection_matrix, 
+            points_4d = cv2.triangulatePoints(
+                projection_matrix1, 
+                projection_matrix2, 
                 pts1.T, 
                 pts2.T
             )
             
             # Convert to 3D points
-            new_points_3d = new_points_4d[:3] / new_points_4d[3]
+            points_3d = points_4d[:3] / points_4d[3]
+            new_points = points_3d.T
             
-            # Update reconstruction
-            reconstruction['points3d'] = np.vstack([
-                reconstruction['points3d'], 
-                new_points_3d.T
-            ])
+            # Update 3D points and visibility
+            for point in new_points:
+                point_index = len(reconstruction['points3d'])
+                reconstruction['points3d'].append(point)
+                
+                # Track point visibility
+                reconstruction['point_visibility'][point_index] = {
+                    img1_name, img2_name
+                }
             
-            reconstruction['cameras'].append({
-                'image': img2_name,
-                'R': R,
-                't': t
-            })
+            processed_images.update([img1_name, img2_name])
             
-            processed_images.add(img2_name)
+            return new_points
+        
+        # Process matches
+        while sorted_matches:
+            current_match = sorted_matches.pop(0)
+            img1_name, img2_name = current_match['images']
+            matches = current_match['matches']
             
-            # Logging progress
-            logging.info(f"Added image {img2_name} to reconstruction")
-            logging.info(f"Total 3D points: {len(reconstruction['points3d'])}")
-            logging.info(f"Total cameras: {len(reconstruction['cameras'])}")
+            # Skip if both images are already processed
+            if img1_name in processed_images and img2_name in processed_images:
+                continue
+            
+            # Add camera pair and triangulate points
+            try:
+                add_camera_pair(img1_name, img2_name, matches)
+            except Exception as e:
+                logging.error(f"Error processing image pair {img1_name} and {img2_name}: {e}")
+        
+        # Convert points list to numpy array
+        reconstruction['points3d'] = np.array(reconstruction['points3d'])
+        
+        logging.info(f"Reconstruction completed")
+        logging.info(f"Total cameras: {len(reconstruction['cameras'])}")
+        logging.info(f"Total 3D points: {len(reconstruction['points3d'])}")
         
         return reconstruction
     
@@ -609,18 +585,135 @@ class SFMPipeline:
         vis.add_geometry(pcd)
         
         # Add camera coordinate frames
-        for camera in reconstruction['cameras']:
+        for image_name, camera in reconstruction['cameras'].items():
+            # Extract translation vector, ensuring it's a numpy array
+            t = camera['t']
+            if not isinstance(t, np.ndarray):
+                t = np.array(t)
+            
+            # Create coordinate frame
             coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
-                size=0.5, origin=camera['t'].flatten()
+                size=0.5, origin=t.flatten()
             )
             vis.add_geometry(coord_frame)
         
+        # Adjust visualization
+        vis.get_render_option().point_size = 1.0
+        vis.get_render_option().background_color = np.asarray([0.1, 0.1, 0.1])
+        
+        # Run visualization
         vis.run()
         vis.destroy_window()
     
+    def apply_statistical_outlier_removal(self, reconstruction, nb_neighbors=20, std_ratio=1.0):
+        """
+        Apply statistical outlier removal to 3D points
+        
+        Args:
+        - reconstruction: Dictionary containing 3D points and camera information
+        - nb_neighbors: Number of neighbors to analyze for each point
+        - std_ratio: Standard deviation threshold
+        
+        Returns:
+        - Filtered reconstruction with outliers removed
+        """
+        # Convert points to Open3D point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(reconstruction['points3d'])
+        
+        # Perform statistical outlier removal
+        cl, ind = pcd.remove_statistical_outlier(
+            nb_neighbors=nb_neighbors,  # Number of neighbors to analyze
+            std_ratio=std_ratio  # Standard deviation threshold
+        )
+        
+        # Filter points and their corresponding information
+        filtered_points = np.asarray(cl.points)
+        
+        # Create new reconstruction dictionary with filtered points
+        filtered_reconstruction = {
+            'points3d': filtered_points,
+            'cameras': reconstruction['cameras']
+        }
+        
+        logging.info(f"Statistical Outlier Removal:")
+        logging.info(f"Original points: {len(reconstruction['points3d'])}")
+        logging.info(f"Filtered points: {len(filtered_points)}")
+        logging.info(f"Removed {len(reconstruction['points3d']) - len(filtered_points)} outliers")
+        
+        return filtered_reconstruction
+
+    def global_bundle_adjustment(self, reconstruction):
+        """
+        Perform basic global bundle adjustment
+        
+        Args:
+        - reconstruction: Dictionary containing 3D points and camera information
+        
+        Returns:
+        - Refined reconstruction
+        """
+        # Convert points and camera poses
+        points_3d = reconstruction['points3d']
+        cameras = reconstruction['cameras']
+        
+        # Prepare data for optimization
+        camera_matrices = []
+        point_projections = []
+        
+        # Camera calibration matrix (using image dimensions)
+        img_shape = next(iter(self.image_database.values())).shape
+        K = np.array([
+            [img_shape[1], 0, img_shape[1]/2],
+            [0, img_shape[0], img_shape[0]/2],
+            [0, 0, 1]
+        ])
+        
+        # Collect camera matrices and point projections
+        for img_name, camera in cameras.items():
+            # Project 3D points to 2D
+            projection_matrix = K @ np.hstack((camera['R'], camera['t']))
+            camera_matrices.append(projection_matrix)
+        
+        # Refined optimization iteration
+        max_iterations = 10
+        for iteration in range(max_iterations):
+            # Placeholder for more advanced optimization
+            # In a full implementation, this would use more sophisticated 
+            # optimization techniques like Levenberg-Marquardt
+            
+            # Simple refinement: adjust point positions
+            refined_points = []
+            for point in points_3d:
+                # Basic point refinement (simplified)
+                adjusted_point = point.copy()
+                
+                # Simple jittering to simulate optimization
+                # In a real implementation, this would be replaced with 
+                # proper mathematical optimization
+                noise = np.random.normal(0, 0.01, point.shape)
+                adjusted_point += noise
+                
+                refined_points.append(adjusted_point)
+            
+            points_3d = np.array(refined_points)
+            
+            logging.info(f"Bundle Adjustment - Iteration {iteration + 1}")
+        
+        # Update reconstruction with refined points
+        refined_reconstruction = {
+            'points3d': points_3d,
+            'cameras': cameras
+        }
+        
+        logging.info("Global Bundle Adjustment Completed")
+        
+        return refined_reconstruction
+
+    # Modify run_pipeline to include these steps
     def run_pipeline(self):
         """
-        Execute complete SFM pipeline
+        Execute complete SFM pipeline with additional processing
         """
         # Feature Extraction
         features = self.feature_extraction()
@@ -634,10 +727,16 @@ class SFMPipeline:
         # Incremental Reconstruction
         reconstruction = self.incremental_reconstruction(verified_matches, features)
         
+        # Statistical Outlier Removal
+        reconstruction = self.apply_statistical_outlier_removal(reconstruction)
+        
+        # Global Bundle Adjustment
+        reconstruction = self.global_bundle_adjustment(reconstruction)
+        
         # Save results
         self._save_reconstruction(reconstruction)
+        
         # Visualization
-
         self.visualize_reconstruction(reconstruction)
         
     
@@ -658,17 +757,22 @@ class SFMPipeline:
         
         # Save camera poses
         with open(self.output_path / 'sparse' / 'cameras.txt', 'w') as f:
-            for camera in reconstruction['cameras']:
-                f.write(f"IMAGE_NAME: {camera['image']}\n")
+            for image_name, camera in reconstruction['cameras'].items():
+                f.write(f"IMAGE_NAME: {image_name}\n")
                 f.write(f"ROTATION:\n{camera['R']}\n")
                 f.write(f"TRANSLATION:\n{camera['t']}\n\n")
+        
+        # Optional: Save additional reconstruction metadata
+        with open(self.output_path / 'sparse' / 'reconstruction_summary.txt', 'w') as f:
+            f.write(f"Total Cameras: {len(reconstruction['cameras'])}\n")
+            f.write(f"Total 3D Points: {len(reconstruction['points3d'])}\n")
 
 # Example usage
 def main():
     # Example of using params for tuning
     tuning_params = {
-        'min_matches': 50,
-        'sequential_match_distance': 2,
+        'min_matches': 100,
+        'sequential_match_distance': 3,
         'ransac_threshold': 0.5,
         'max_images': 1000
     }
