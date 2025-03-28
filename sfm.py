@@ -29,6 +29,43 @@ class SparsePointCloudGenerator:
         self.frames = []
         self.keypoints = []
         self.descriptors = []
+    
+    def compute_camera_matrix(self, fov_degrees=90):
+        """
+        Compute the camera intrinsic matrix (K) based on video resolution and assumed FOV.
+
+        Args:
+            fov_degrees (float): Horizontal field of view of the camera in degrees.
+
+        Returns:
+            numpy.ndarray: 3x3 camera intrinsic matrix.
+        """
+        # Open video and get frame resolution
+        cap = cv2.VideoCapture(self.video_path)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        # Convert FOV to radians
+        fov_radians = np.radians(fov_degrees)
+        
+        # Estimate focal length (f = (W/2) / tan(FOV/2))
+        f_x = f_y = (width / 2) / np.tan(fov_radians / 2)
+        
+        # Principal point (center of the image)
+        c_x = width / 2
+        c_y = height / 2
+        
+        # Construct the intrinsic matrix
+        K = np.array([[f_x, 0, c_x],
+                    [0, f_y, c_y],
+                    [0, 0, 1]], dtype=np.float32)
+
+        if self.verbose:
+            self.logger.info(f"Computed Camera Matrix:\n{K}")
+
+        return K
+
         
     def extract_frames(self, target_fps=None):
         """
@@ -139,38 +176,42 @@ class SparsePointCloudGenerator:
     
     def estimate_motion(self, matches_list):
         """
-        Estimate camera motion between consecutive frames
-        
+        Estimate camera motion between consecutive frames.
+
         Args:
-            matches_list (list): List of feature matches
-        
+            matches_list (list): List of feature matches.
+
         Returns:
-            list: Camera motion transformations
+            list: Camera motion transformations.
         """
         if self.verbose:
             self.logger.info("Estimating camera motion")
-        
+
         camera_motions = []
         
+        # Compute camera matrix (K)
+        K = self.compute_camera_matrix()
+
         # Use tqdm for progress tracking if verbose is True
         matches_iterator = tqdm(enumerate(matches_list), 
                                 total=len(matches_list), 
                                 desc="Estimating Motion") if self.verbose else enumerate(matches_list)
-        
+
         for i, matches in matches_iterator:
             # Get matched keypoints
             pts1 = np.float32([self.keypoints[i][m.queryIdx] for m in matches])
             pts2 = np.float32([self.keypoints[i+1][m.trainIdx] for m in matches])
             
-            # Estimate Essential Matrix
-            E, mask = cv2.findEssentialMat(pts1, pts2, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+            # Estimate Essential Matrix using K
+            E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
             
             # Recover pose
-            _, R, t, _ = cv2.recoverPose(E, pts1, pts2)
+            _, R, t, _ = cv2.recoverPose(E, pts1, pts2, K)
             
             camera_motions.append((R, t))
-        
+
         return camera_motions
+
     
     def triangulate_points(self, camera_motions):
         """
@@ -276,7 +317,7 @@ def main():
     sfm_generator = SparsePointCloudGenerator(video_path, verbose=True)
     
     # Generate point cloud, sampling at 2 fps
-    point_cloud = sfm_generator.generate_pointcloud(target_fps=2, remove_outliers=True)    
+    point_cloud = sfm_generator.generate_pointcloud(target_fps=10, remove_outliers=True)    
     # Visualize point cloud
     o3d.visualization.draw_geometries([point_cloud])
     o3d.io.write_point_cloud("output_point_cloud.ply", point_cloud)

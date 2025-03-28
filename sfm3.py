@@ -4,6 +4,130 @@ import open3d as o3d
 import logging
 from tqdm import tqdm
 
+# class CameraCalibration:
+#     @staticmethod
+#     def estimate_camera_matrix(frames, grid_size=(9, 6), square_size=1.0):
+#         """
+#         Estimate camera matrix using chessboard calibration
+        
+#         Args:
+#         - frames (list): List of video frames
+#         - grid_size (tuple): Number of inner corners in chessboard grid
+#         - square_size (float): Size of chessboard square in real-world units
+        
+#         Returns:
+#         - Camera matrix
+#         - Distortion coefficients
+#         """
+#         # Prepare object points (0,0,0), (1,0,0), (2,0,0) ..., (grid_size)
+#         objp = np.zeros((grid_size[0] * grid_size[1], 3), np.float32)
+#         objp[:, :2] = np.mgrid[0:grid_size[0], 0:grid_size[1]].T.reshape(-1, 2)
+#         objp *= square_size
+        
+#         # Arrays to store object points and image points from all frames
+#         objpoints = []  # 3d points in real-world space
+#         imgpoints = []  # 2d points in image plane
+        
+#         # # Process frames
+#         # for frame in frames:
+#         #     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            
+#         #     # Find chessboard corners
+            
+#         #     ret, corners = cv2.findChessboardCorners(gray, grid_size, None)
+#         #     ret=False
+            
+#         #     # If found, add object points and image points
+#         #     if ret:
+#         #         # Refine corner detection
+#         #         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+#         #         corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+                
+#         #         objpoints.append(objp)
+#         #         imgpoints.append(corners2)
+                
+#         #         # Optional: Draw and display corners
+#         #         cv2.drawChessboardCorners(frame, grid_size, corners2, ret)
+#         #         cv2.imshow('Chessboard Detection', frame)
+#         #         cv2.waitKey(500)  # Pause to show each frame
+        
+#         # cv2.destroyAllWindows()
+        
+#         # # Calibrate camera
+#         # ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+#         #     objpoints, imgpoints, gray.shape[::-1], None, None
+#         # )
+        
+#         # if not ret:
+#         #     logging.warning("Camera calibration failed. Using default intrinsics.")
+#         #     return CameraCalibration.default_camera_matrix(frames[0].shape)
+#         logging.warning("Camera calibration failed. Using default intrinsics.")
+#         return CameraCalibration.default_camera_matrix(frames[0].shape)
+        
+#         logging.info("Camera Matrix:")
+#         logging.info(camera_matrix)
+#         logging.info("\nDistortion Coefficients:")
+#         logging.info(dist_coeffs)
+        
+#         return camera_matrix, dist_coeffs
+    
+#     @staticmethod
+#     def default_camera_matrix(frame_shape):
+#         """
+#         Create a default camera matrix based on frame dimensions
+        
+#         Args:
+#         - frame_shape (tuple): Shape of the video frame
+        
+#         Returns:
+#         - Default camera matrix
+#         """
+#         height, width = frame_shape[:2]
+        
+#         # Simple pinhole camera model estimation
+#         fx = width  # Focal length in x
+#         fy = width  # Focal length in y
+#         cx = width / 2  # Principal point x
+#         cy = height / 2  # Principal point y
+        
+#         camera_matrix = np.array([
+#             [fx, 0, cx],
+#             [0, fy, cy],
+#             [0, 0, 1]
+#         ])
+        
+#         logging.info("Using default camera matrix based on frame dimensions")
+#         logging.info(camera_matrix)
+        
+#         return camera_matrix
+    
+#     @staticmethod
+#     def undistort_frames(frames, camera_matrix, dist_coeffs):
+#         """
+#         Undistort frames using calculated camera matrix and distortion coefficients
+        
+#         Args:
+#         - frames (list): List of input frames
+#         - camera_matrix (np.array): Camera intrinsic matrix
+#         - dist_coeffs (np.array): Distortion coefficients
+        
+#         Returns:
+#         - List of undistorted frames
+#         """
+#         undistorted_frames = []
+        
+#         for frame in frames:
+#             # Undistort the frame
+#             undistorted_frame = cv2.undistort(
+#                 frame, 
+#                 camera_matrix, 
+#                 dist_coeffs
+#             )
+#             undistorted_frames.append(undistorted_frame)
+        
+#         return undistorted_frames
+
 class FeatureDetector:
     """
     Class to manage different feature detection methods
@@ -49,7 +173,7 @@ class PointCloudFilter:
     Class to manage different point cloud filtering techniques
     """
     @staticmethod
-    def statistical_outlier_removal(point_cloud, nb_neighbors=20, std_ratio=1.0):
+    def statistical_outlier_removal(point_cloud, nb_neighbors=20000, std_ratio=1.0):
         """
         Statistical outlier removal filter
         Removes points that are statistical outliers from the neighborhood
@@ -66,7 +190,7 @@ class PointCloudFilter:
         return filtered_pcd
     
     @staticmethod
-    def radius_outlier_removal(point_cloud, nb_points=16, radius=0.05):
+    def radius_outlier_removal(point_cloud, nb_points=20000, radius=0.1):
         """
         Radius outlier removal filter
         Removes points that have fewer neighbors within a given radius
@@ -150,8 +274,8 @@ def structure_from_motion(frames, feature_detector=None, camera_matrix=None):
     # Default camera matrix
     if camera_matrix is None:
         camera_matrix = np.array([
-            [700, 0, 320],  # fx, skew, cx
-            [0, 700, 240],  # 0, fy, cy
+            [424, 0, 424],  # fx, skew, cx
+            [0, 424, 240],  # 0, fy, cy
             [0, 0, 1]       # 0, 0, 1
         ])
     
@@ -279,6 +403,7 @@ def main(video_path, target_fps=1):
             frames, 
             feature_detector=detector
         )
+        logging.info(f"Generated PointCloud: {len(point_cloud)}")
         
         # Run filters
         for filter_method in point_cloud_filters:
@@ -286,6 +411,8 @@ def main(video_path, target_fps=1):
             
             # Filter point cloud
             filtered_pcd = filter_method(point_cloud)
+            logging.info(f"Filtered PointCloud: {len(point_cloud)}")
+            
             
             # Visualize results
             visualize_point_cloud(point_cloud, camera_poses, filtered_pcd)
@@ -298,4 +425,4 @@ def main(video_path, target_fps=1):
 # Example usage
 if __name__ == "__main__":
     video_path = 'watchtower.mp4'
-    main(video_path, target_fps=5)
+    main(video_path, target_fps=30)
