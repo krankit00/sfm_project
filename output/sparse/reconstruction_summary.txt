@@ -1,2 +1,2 @@
-Total Cameras: 41
-Total 3D Points: 10585
+Total Cameras: 122
+Total 3D Points: 51914

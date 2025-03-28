@@ -676,7 +676,7 @@ class SFMPipeline:
             camera_matrices.append(projection_matrix)
         
         # Refined optimization iteration
-        max_iterations = 10
+        max_iterations = 5
         for iteration in range(max_iterations):
             # Placeholder for more advanced optimization
             # In a full implementation, this would use more sophisticated 
@@ -771,7 +771,7 @@ class SFMPipeline:
 def main():
     # Example of using params for tuning
     tuning_params = {
-        'min_matches': 100,
+        'min_matches': 200,
         'sequential_match_distance': 3,
         'ransac_threshold': 0.5,
         'max_images': 1000
