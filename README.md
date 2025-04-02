@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements a Structure from Motion (SfM) based sparse pointcloud generator using OpenCV, Open3D, and PyTorch. The tool can extract frames from a video, detect features, match them across consecutive frames, estimate camera motion, and generate a 3D point cloud representation.
+This project implements a Structure from Motion (SfM) based sparse pointcloud generator using OpenCV, Open3D, PyTorch, and COLMAP. The tool can extract frames from a video, detect features, match them across consecutive frames, estimate camera motion, and generate a 3D point cloud representation.
 
 ## Features
 
@@ -10,7 +10,7 @@ This project implements a Structure from Motion (SfM) based sparse pointcloud ge
 - Multiple feature detection methods (SIFT, ORB)
 - Feature matching and tracking
 - Camera motion estimation
-- 3D point cloud generation
+- 3D point cloud generation using Open3D or COLMAP
 - Verbose logging and progress tracking
 - Configurable frame sampling rate
 
@@ -20,6 +20,8 @@ This project implements a Structure from Motion (SfM) based sparse pointcloud ge
 - GPU support recommended (optional)
 
 ## Installation
+
+### Open3D-based SfM Pipeline
 
 1. Clone the repository:
 ```bash
@@ -42,9 +44,27 @@ conda install -c conda-forge kornia
 pip install tqdm
 ```
 
+### COLMAP-based SfM Pipeline
+
+1. Install COLMAP:
+   - On Ubuntu:
+   ```bash
+   sudo apt-get install colmap
+   ```
+   - On macOS (via Homebrew):
+   ```bash
+   brew install colmap
+   ```
+   - On Windows, download from [COLMAP's official site](https://colmap.github.io/)
+
+2. Install `pycolmap`:
+```bash
+pip install pycolmap
+```
+
 ## Usage
 
-### Basic Usage
+### Open3D-based SfM
 ```python
 from sparse_pointcloud_generator import SparsePointCloudGenerator
 
@@ -60,20 +80,27 @@ import open3d as o3d
 o3d.visualization.draw_geometries([point_cloud])
 ```
 
-### Command Line Options
-```bash
-python generate_pointcloud.py --video video.mp4 --fps 2 --method sift
+### COLMAP-based SfM
+```python
+import pathlib
+from pycolmap_sfm.sfm_colmap import run_sfm
+
+image_dir = pathlib.Path("path/to/images")
+output_path = pathlib.Path("path/to/output")
+
+run_sfm(image_dir, output_path, use_gpu=False)
 ```
 
 ## Configuration Options
 
 - `verbose`: Enable/disable detailed logging
-- `target_fps`: Control frame sampling rate
+- `target_fps`: Control frame sampling rate for Open3D pipeline
 - `method`: Feature detection method ('sift' or 'orb')
+- `use_gpu`: Enable/disable GPU processing for COLMAP pipeline
 
 ## Performance Tips
 
-- Use GPU-enabled OpenCV for faster processing
+- Use GPU-enabled OpenCV and COLMAP for faster processing
 - Adjust `target_fps` to balance accuracy and computational cost
 - Experiment with different feature detection methods
 
@@ -101,6 +128,8 @@ Distributed under the MIT License. See `LICENSE` for more information.
 - Open3D
 - PyTorch
 - Kornia
+- COLMAP
+- Pycolmap
 
 ## Citation
 
