@@ -17,8 +17,7 @@ def main():
     output_path = pathlib.Path(args.output_path)
     extract_frames(args.video_path, image_dir, fps=args.fps)
     maps = run_sfm(image_dir=image_dir, output_path=output_path)
-    print(f"Maps Generated: {len(maps)}")
-    process_pointcloud(output_path, view_pcd=True, save_pcd=True, filter_pcd=True)
+    process_pointcloud(output_path, view_pcd=True, save_pcd=True, filter_pcd=True, is_dense=True)
 
 if __name__ == "__main__":
     main()

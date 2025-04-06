@@ -1,7 +1,52 @@
+import torch
 import pycolmap
 import os
 import cv2
 import open3d as o3d
+from tqdm import tqdm
+import numpy as np
+from joblib import Parallel, delayed, parallel_backend
+
+def torch_sor_chunked(pcd, nb_neighbors=5000, std_ratio=0.1, device='cuda', batch_size=1000): # Tune batch_size for GPU Memory failures
+    pts = torch.tensor(np.asarray(pcd.points), device=device)
+    N = pts.shape[0]
+    mean_dists = torch.empty(N, device=device)
+
+    for i in tqdm(range(0, N, batch_size), desc="Chunked SOR"):
+        end = min(i + batch_size, N)
+        batch = pts[i:end]  # (B, 3)
+        dists = torch.cdist(batch, pts, p=2)  # (B, N)
+        topk, _ = torch.topk(dists, nb_neighbors + 1, largest=False)  # (B, k+1)
+        mean_dists[i:end] = topk[:, 1:].mean(dim=1)  # Exclude self
+
+    mean = mean_dists.mean()
+    std = mean_dists.std()
+    threshold = mean + std_ratio * std
+    inliers = (mean_dists < threshold).nonzero(as_tuple=True)[0].cpu().numpy()
+    return pcd.select_by_index(inliers.tolist())
+
+def custom_statistical_outlier_removal_parallel(pcd, nb_neighbors=5000, std_ratio=0.1, n_jobs=10):
+    pts = np.asarray(pcd.points)
+    kdtree = o3d.geometry.KDTreeFlann(pcd)
+
+    def compute_mean_dist(i):
+        [_, idx, _] = kdtree.search_knn_vector_3d(pcd.points[i], nb_neighbors)
+        neighbors = pts[idx, :]
+        dists = np.linalg.norm(neighbors - pts[i], axis=1)
+        return np.mean(dists)
+
+    with parallel_backend("threading"):
+        mean_dists = Parallel(n_jobs=n_jobs)(
+            delayed(compute_mean_dist)(i) for i in tqdm(range(len(pts)), desc="Threaded distance computation")
+        )
+
+    mean = np.mean(mean_dists)
+    std = np.std(mean_dists)
+    threshold = mean + std_ratio * std
+
+    inliers = [i for i, dist in enumerate(mean_dists) if dist < threshold]
+    return pcd.select_by_index(inliers)
+
 
 def statistical_outlier_removal(pcd, nb_neighbors=5000, std_ratio=0.1):
         """
@@ -39,17 +84,25 @@ def visualize_sparse_pointcloud(pcd):
     vis.run()
     vis.destroy_window()
 
-def process_pointcloud(output_path, view_pcd: bool = True, save_pcd: bool = True, filter_pcd: bool = True):
+def process_pointcloud(output_path, view_pcd: bool = True, save_pcd: bool = True, filter_pcd: bool = True, is_dense: bool = False):
     # print(f"Loading sparse reconstruction from {output_path / "0"}...")
-    reconstruction = pycolmap.Reconstruction(output_path / "0" )
-    if not os.path.isdir(output_path / "pointcloud.ply") and save_pcd:
-        print("Pointcloud Saved")
-        reconstruction.export_PLY(output_path / "pointcloud.ply")    
-    pcd = o3d.io.read_point_cloud(output_path / "pointcloud.ply")
+    if not is_dense:
+        reconstruction = pycolmap.Reconstruction(output_path / "0" )
+        if not os.path.exists(output_path / "pointcloud.ply") and save_pcd:
+            print("Pointcloud Saved")
+            reconstruction.export_PLY(output_path / "pointcloud.ply")    
+        pcd = o3d.io.read_point_cloud(output_path / "pointcloud.ply")
+    else:
+        pcd = o3d.io.read_point_cloud(output_path / "mvs" / "dense.ply")
     if filter_pcd:
-        pcd = statistical_outlier_removal(pcd)
-        if save_pcd:
-            o3d.io.write_point_cloud(output_path / "pointcloud_filtered.ply", pcd)
+        if not os.path.exists(output_path / "pointcloud_filtered.ply"):
+            print("Performing Outlier Removal ...")
+            pcd = torch_sor_chunked(pcd)
+            if save_pcd:
+                o3d.io.write_point_cloud(output_path / "pointcloud_filtered.ply", pcd)
+        else:
+            print("Filtered Pointcloud Exists. Loading from ...", output_path / "pointcloud_filtered.ply")
+            pcd = o3d.io.read_point_cloud(output_path / "pointcloud_filtered.ply")
     if view_pcd:
         visualize_sparse_pointcloud(pcd)
 

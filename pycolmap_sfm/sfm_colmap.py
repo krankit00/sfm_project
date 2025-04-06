@@ -24,9 +24,13 @@ def run_sfm(image_dir: pathlib.Path, output_path: pathlib.Path, use_gpu: bool = 
         else:
             print("Saving reconstructed map...")
             maps[0].write(output_path)
+        print(f"Maps Generated: {len(maps)}")
     else:
        print("Already reconstructed. Loading reconstruction!")
     
-    
+    pycolmap.undistort_images(mvs_path, output_path, image_dir)
+    pycolmap.patch_match_stereo(mvs_path)  # requires compilation with CUDA
+    pycolmap.stereo_fusion(mvs_path / "dense.ply", mvs_path)
     
     print("SfM pipeline completed successfully.")
+    # return maps
